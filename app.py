@@ -197,21 +197,22 @@ def obter_sugestao_nome(nome_original):
     elif "internet" in nome_lower:
         return "NET_PPPOE"
     
-    return "" # Deixa em branco caso não seja nenhuma dessas
+    return ""
 
 def processar_zip_para_csv(dados_binarios_zip):
-    # Regex 1: Huawei/Datacom (Captura Grupo 1 (Nome) e Grupo 2 (ID))
-    padrao_vlan1 = re.compile(r"^service-vlan\s+(\S+)\s+(\d+)\s+to\s+\d+\s+type\s+\S+", re.MULTILINE)
+    # Regra 1: AN6000 / Datacom / Huawei (Uma linha) -> Captura Nome (Grupo 1) e ID (Grupo 2)
+    padrao_an6000 = re.compile(r"^service-vlan\s+(\S+)\s+(\d+)\s+to\s+\d+\s+type\s+\S+", re.MULTILINE)
     
-    # Regex 2: FiberHome (Captura Grupo 1 (ID) e Grupo 2 (Nome))
-    padrao_vlan2 = re.compile(r"^set\s+service_vlan\s+(\d+)\s+(\S+)\s+type\s+\S+", re.MULTILINE)
+    # Regra 2: AN5000 (Duas linhas)
+    # 2.1 - Captura o Índice (Grupo 1) e o Nome (Grupo 2)
+    padrao_an5000_nome = re.compile(r"^set\s+service_vlan\s+(\d+)\s+(\S+)\s+type\s+\S+", re.MULTILINE)
+    # 2.2 - Captura o Índice (Grupo 1) e o VLAN ID verdadeiro (Grupo 2)
+    padrao_an5000_id = re.compile(r"^set\s+service_vlan\s+(\d+)\s+vlan_begin\s+(\d+)", re.MULTILINE)
     
-    # Regras para buscar Nome e IP da OLT
     padrao_hostname = re.compile(r"^hostname\s+(\S+)", re.MULTILINE)
     padrao_ip = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
 
     linhas_csv = []
-    # Atualizado: Agora com 5 colunas, incluindo a Sugestão
     linhas_csv.append(["Nome da OLT", "IP da OLT", "Nome da VLAN", "ID da VLAN", "Sugestão de Nome"])
 
     with zipfile.ZipFile(io.BytesIO(dados_binarios_zip)) as arquivo_zip:
@@ -230,19 +231,32 @@ def processar_zip_para_csv(dados_binarios_zip):
             match_hostname = padrao_hostname.search(conteudo_arquivo)
             nome_olt = match_hostname.group(1) if match_hostname else "Nome Não Encontrado"
 
-            # Processa Padrão 1 (Huawei/Datacom)
-            matches_vlan1 = padrao_vlan1.findall(conteudo_arquivo)
-            for match in matches_vlan1:
+            # --------------------------------------------------------
+            # Processa OLTs AN6000 / Huawei / Datacom
+            # --------------------------------------------------------
+            matches_an6000 = padrao_an6000.findall(conteudo_arquivo)
+            for match in matches_an6000:
                 nome_vlan = match[0]
                 id_vlan = match[1]
                 sugestao = obter_sugestao_nome(nome_vlan)
                 linhas_csv.append([nome_olt, ip_olt, nome_vlan, id_vlan, sugestao])
 
-            # Processa Padrão 2 (FiberHome)
-            matches_vlan2 = padrao_vlan2.findall(conteudo_arquivo)
-            for match in matches_vlan2:
-                id_vlan = match[0]  # No Fiberhome, o número vem primeiro
+            # --------------------------------------------------------
+            # Processa OLTs AN5000 (Relacionamento de Duas Linhas)
+            # --------------------------------------------------------
+            matches_nomes = padrao_an5000_nome.findall(conteudo_arquivo)
+            matches_ids = padrao_an5000_id.findall(conteudo_arquivo)
+            
+            # Monta um dicionário para ligar o {Índice : VLAN_ID}
+            dict_ids = {idx: vlan_id for idx, vlan_id in matches_ids}
+            
+            for match in matches_nomes:
+                indice = match[0]
                 nome_vlan = match[1]
+                
+                # Busca o ID da VLAN baseado no Índice. Se não existir o vlan_begin, avisa.
+                id_vlan = dict_ids.get(indice, "ID Pendente")
+                
                 sugestao = obter_sugestao_nome(nome_vlan)
                 linhas_csv.append([nome_olt, ip_olt, nome_vlan, id_vlan, sugestao])
 
@@ -268,7 +282,6 @@ class ServidorExtrator(http.server.SimpleHTTPRequestHandler):
                 return
 
             saida_csv_memoria = io.StringIO()
-            # Mantemos o ponto e vírgula, padrão do Excel em PT-BR
             escritor_csv = csv.writer(saida_csv_memoria, delimiter=';')
             escritor_csv.writerows(linhas_extraidas)
 
